@@ -13,7 +13,7 @@
 // LICENSE SERVER CONFIGURATION
 // IMPORTANT: Replace LICENSE_SERVER with your actual deployed server URL
 //=============================================================================
-#define LICENSE_SERVER   "https://your-license-server.com"
+#define LICENSE_SERVER   "https://pmc-dte-final.onrender.com"
 #define PRODUCT_ID       "PMC_DTE_v1"
 #define CHECK_INTERVAL   3600   // re-validate every hour (seconds)
 
