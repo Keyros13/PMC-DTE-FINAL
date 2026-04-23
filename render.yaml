@@ -1,0 +1,16 @@
+# render.yaml – drop this file in your repo root and connect to Render.com
+# Free tier is sufficient for up to ~100 students
+
+services:
+  - type: web
+    name: pmc-license-server
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    envVars:
+      - key: ADMIN_PASSWORD
+        sync: false          # set manually in Render dashboard (keep secret)
+      - key: SECRET_SALT
+        generateValue: true  # Render auto-generates a random value
+      - key: PORT
+        value: "10000"
