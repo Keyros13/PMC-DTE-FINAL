@@ -73,15 +73,26 @@ int       g_LabelY = 20;  // Y base for top-right labels (pixels)
 //=============================================================================
 // LICENSE STATE  (do not modify)
 //=============================================================================
-bool   g_LicenseValid    = false;  // true only after server confirms active key
-string g_LicenseMsg      = "";     // message shown to user
-datetime g_LastCheck     = 0;      // timestamp of last validation
+bool     g_LicenseValid    = false;  // true only after server confirms active key
+bool     g_EverValidated   = false;  // true once server returned OK at least once
+string   g_LicenseMsg      = "";     // message shown to user
+datetime g_LastCheck       = 0;      // timestamp of last validation
 
 //+------------------------------------------------------------------+
 //| Custom indicator initialization                                   |
 //+------------------------------------------------------------------+
 int OnInit()
   {
+   // ── Hard-block: default or empty key ──────────────────────────
+   if(InpLicenseKey == "XXXX-XXXX-XXXX-XXXX" || StringLen(InpLicenseKey) < 10)
+     {
+      g_LicenseValid = false;
+      g_LicenseMsg   = "No License Key entered ❌  Contact your instructor.";
+      EventSetTimer(60); // retry every 60s in case user updates the key
+      DrawLicenseError();
+      return INIT_SUCCEEDED;
+     }
+
    // Validate inputs
    if(InpMarubozuWickRatio <= 0)
      {
@@ -90,23 +101,18 @@ int OnInit()
      }
 
    // ── License check on load ──────────────────────────────────────
-   // Allow WebRequest to our license server (must also be added in
-   // MT5: Tools → Options → Expert Advisors → Allow WebRequest for:)
    ValidateLicense();
 
    if(!g_LicenseValid)
      {
       DrawLicenseError();
-      // Still start timer so we can retry periodically
-      EventSetTimer(CHECK_INTERVAL);
-      return INIT_SUCCEEDED; // load indicator but show error, don't crash
+      EventSetTimer(60); // retry every 60s so student sees result quickly after fixing WebRequest
+      return INIT_SUCCEEDED;
      }
 
-   // Force a first draw
+   // ── Licensed: normal startup ───────────────────────────────────
    ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
-   EventSetTimer(60); // refresh every minute (handles day change)
-
-   // Initial draw
+   EventSetTimer(60);
    DrawAll();
 
    return INIT_SUCCEEDED;
@@ -127,10 +133,21 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTimer()
   {
+   // Hard-block default key at every timer tick
+   if(InpLicenseKey == "XXXX-XXXX-XXXX-XXXX" || StringLen(InpLicenseKey) < 10)
+     {
+      g_LicenseValid = false;
+      g_LicenseMsg   = "No License Key entered ❌  Contact your instructor.";
+      DeleteAllObjects();
+      DrawLicenseError();
+      return;
+     }
+
    datetime now = TimeCurrent();
 
-   // Re-validate license every CHECK_INTERVAL seconds
-   if(now - g_LastCheck >= CHECK_INTERVAL)
+   // Re-validate every hour if licensed, every 60s if not yet validated
+   int interval = g_EverValidated ? CHECK_INTERVAL : 60;
+   if(now - g_LastCheck >= interval)
       ValidateLicense();
 
    if(!g_LicenseValid)
@@ -157,9 +174,17 @@ int OnCalculate(const int        rates_total,
                 const long      &volume[],
                 const int       &spread[])
   {
-   // Redraw whenever a new bar appears
+   // Redraw whenever a new bar appears – only if licensed
    if(prev_calculated != rates_total)
-      DrawAll();
+     {
+      if(!g_LicenseValid)
+        {
+         DeleteAllObjects();
+         DrawLicenseError();
+        }
+      else
+         DrawAll();
+     }
 
    return rates_total;
   }
@@ -196,8 +221,9 @@ void ValidateLicense()
 
       if(body == "OK")
         {
-         g_LicenseValid = true;
-         g_LicenseMsg   = "License Active ✅";
+         g_LicenseValid  = true;
+         g_EverValidated = true;   // mark as successfully validated at least once
+         g_LicenseMsg    = "License Active ✅";
         }
       else if(body == "EXPIRED")
         {
@@ -222,15 +248,19 @@ void ValidateLicense()
      }
    else if(httpCode == -1)
      {
-      // WebRequest not allowed – user must whitelist the URL in MT5 settings
-      g_LicenseValid = false;
-      g_LicenseMsg   = "⚠️ Enable WebRequest in MT5: Tools→Options→Expert Advisors";
+      // WebRequest blocked in MT5 settings → ALWAYS hard block, no grace period.
+      // The student must whitelist the URL before the indicator works at all.
+      g_LicenseValid  = false;
+      g_EverValidated = false; // reset so grace period never kicks in
+      g_LicenseMsg    = "⚠️ WebRequest blocked. In MT5: Tools→Options→Expert Advisors"
+                        + " → enable WebRequest and add: " + LICENSE_SERVER;
      }
    else
      {
-      // Network/server unreachable – grant a 24h grace period so traders
-      // aren't locked out by temporary connectivity issues
-      if(g_LicenseValid && (TimeCurrent() - g_LastCheck < 86400))
+      // Grace period ONLY if the key was already validated at least once before.
+      // A brand-new key with no prior validation is always blocked if server
+      // is unreachable – this prevents bypass by simply disabling the network.
+      if(g_EverValidated && (TimeCurrent() - g_LastCheck < 86400))
         {
          g_LicenseMsg = "License (offline grace period) ⚠️";
          // keep g_LicenseValid = true during grace period
@@ -238,7 +268,10 @@ void ValidateLicense()
       else
         {
          g_LicenseValid = false;
-         g_LicenseMsg   = "Cannot reach license server ❌  (HTTP " + IntegerToString(httpCode) + ")";
+         if(!g_EverValidated)
+            g_LicenseMsg = "⚠️ Cannot verify license. Check WebRequest in MT5: Tools→Options→Expert Advisors and add: " + LICENSE_SERVER;
+         else
+            g_LicenseMsg = "Cannot reach license server ❌  (HTTP " + IntegerToString(httpCode) + ")";
         }
      }
   }
@@ -287,6 +320,14 @@ void DrawLicenseError()
 //=============================================================================
 void DrawAll()
   {
+   // ── Safety guard: never draw if license is not valid ──────────
+   if(!g_LicenseValid)
+     {
+      DeleteAllObjects();
+      DrawLicenseError();
+      return;
+     }
+
    // Step 1 – Clean previous objects
    DeleteAllObjects();
 
@@ -660,7 +701,24 @@ void OnChartEvent(const int id,
                   const string &sparam)
   {
    if(id == CHARTEVENT_CHART_CHANGE)
+     {
+      // MUST check license before drawing – this was the bypass entry point
+      if(InpLicenseKey == "XXXX-XXXX-XXXX-XXXX" || StringLen(InpLicenseKey) < 10)
+        {
+         g_LicenseValid = false;
+         g_LicenseMsg   = "No License Key entered ❌  Contact your instructor.";
+         DeleteAllObjects();
+         DrawLicenseError();
+         return;
+        }
+      if(!g_LicenseValid)
+        {
+         DeleteAllObjects();
+         DrawLicenseError();
+         return;
+        }
       DrawAll();
+     }
   }
 //+------------------------------------------------------------------+
 //                       END OF INDICATOR                             //
